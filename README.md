@@ -1,11 +1,15 @@
 # tlearn
 
-R/C++ toolkit for transfer learning with least squares. 
+Fast R/C++ toolkit for transfer learning with least squares.
 
+**Under the hood:**
 <ul>
-  <li>Extensively benchmarked and optimized</li>
-  <li>Dedicated backend support for either dense or sparse inputs</li>
-  <li>Utilities for assessing projection models
-  <li>Seamless integration with multinomial and binary constraints, and L0 truncations</li>
-  <li>R functions for convenient access, and Rcpp interfaces for direct access to `tlearn` solvers</li>
+  <li>R/RcppArmadillo for fast linear Algebra calculations in C++</li>
+  <li>Parallelization with OpenMP</li>
+  <li>Extensively microbenchmarking to achieve fastest possible implementation</li>
+  <li>Dedicated double (precise) and float (fast) implementations</li>
+  <li>Dedicated dense and sparse implementations</li>
+  <li>First-in-class multinomial and binary least squares constraints</li>
+  <li>First-in-class L0 truncation on sample and model coefficients</li>  
+  <li>Convenient R front-end for every single C++ solver. Broadly applicable beyond transfer learning.</li>
 </ul>
