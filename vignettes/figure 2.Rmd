@@ -1,0 +1,466 @@
+---
+title: "Transfer learning with cluster models by constrained projection"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In this vignette, we will learn a clustering model of t-cell identities and project it onto new datasets.
+
+## Get the T-cell data
+
+We will use the T-cells dataset available [https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE133345](here) (Bian et al. Nature 2020). The code below handles the download and importing:
+
+```{r, error = FALSE, warning = FALSE, message = FALSE}
+library(tlearn)
+library(Seurat)
+library(RColorBrewer)
+
+# download annotation file
+filename <- "GSE133345_Annotations_of_all_1231_embryonic_cells_updated_0620.txt.gz"
+temp <- tempfile()
+download.file("https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE133345&format=file&file=GSE133345%5FAnnotations%5Fof%5Fall%5F1231%5Fembryonic%5Fcells%5Fupdated%5F0620%2Etxt%2Egz", temp)
+tcells_ann <- read.table(gzfile(temp, filename), header = TRUE, sep = "", dec = ",")
+unlink(temp)
+
+# download count data file
+filename <- "GSE133345_Quality_controled_UMI_data_of_all_1231_embryonic_cells.txt.gz"
+temp <- tempfile()
+download.file("https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE133345&format=file&file=GSE133345%5FQuality%5Fcontroled%5FUMI%5Fdata%5Fof%5Fall%5F1231%5Fembryonic%5Fcells%2Etxt%2Egz", temp)
+tcells <- read.table(gzfile(temp, filename), header = TRUE, sep = "", dec = ",")
+tcells <- as(as.matrix(tcells), "dgCMatrix")
+unlink(temp)
+```
+
+## Preprocessing
+
+Normalize the count data with Seurat SCTransform:
+
+```{r, error = FALSE, warning = FALSE, message = FALSE}
+tcells <- CreateSeuratObject(tcells)
+tcells <- SCTransform(tcells, verbose = FALSE)
+tcells <- GetAssayData(tcells)
+```
+
+## Average cluster expression to get the "w" matrix
+
+The `tcell_ann` object contains cell type annotations. Average the expression of genes for all cells in each cluster:
+
+```{r}
+cluster_cells <- lapply(split(tcells_ann, tcells_ann$cluster), rownames)
+w <- do.call(cbind, lapply(cluster_cells, function(x) rowMeans(tcells[,x])))
+```
+
+## Use T-cell samples as the "A" matrix
+
+In the first example, we will simply project back onto the original dataset. This should be a very clean projection.
+
+First, rearrange cell order in `tcells` to facilitate visualization of the projections later on.
+
+```{r}
+A <- tcells[, order(tcells_ann$cluster)]
+```
+
+`centers` is the feature model we will use to demonstrate hard and soft clusterings with `tlearn`.
+
+## Visualizing the setup
+
+Plot a UMAP of the T-cells as presented in the original publication by Bian et al. alongside a heatmap of highly variable features between T-cell clusterings:
+
+```{r}
+tcells_ann$UMAP1 <- as.double(tcells_ann$UMAP1)
+tcells_ann$UMAP2 <- as.double(tcells_ann$UMAP2)
+
+palette <- c("#FF7F03", "#8DD3C7", "#41AE76", "#BEBADA", "#FB8072", "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", "#D9D9D9", "#BC80BD", "#CCEBC5", "#FFED6F", "#3288BD", "#BF812D")
+
+# umap plot
+umap <- ggplot(tcells_ann, aes(x = UMAP1, y = UMAP2, col = cluster)) + 
+  geom_point() + 
+  theme_bw() + 
+  theme(
+    axis.ticks.x=element_blank(), 
+    axis.ticks.y=element_blank(), 
+    axis.text.y = element_blank(), 
+    axis.text.x = element_blank(), 
+    axis.line = element_blank(), 
+    plot.title = element_text(hjust = 0.5), 
+    axis.title.x = element_text(hjust = 0), 
+    axis.title.y = element_text(hjust = 0), 
+    aspect.ratio = 1, 
+    legend.key.size = unit(0.3, "cm"),
+    panel.grid.major = element_blank(), 
+    panel.grid.minor = element_blank()) + 
+  guides(colour = guide_legend(override.aes = list(size=4, shape = 15))) + 
+  scale_color_manual(values = palette, guide_coloursteps(title = "cell type")) + 
+  labs(title = "1231 CD64+ cells")
+
+# get top 2000 highly variable genes
+A_hvg <- CreateSeuratObject(A)
+A_hvg <- FindVariableFeatures(A_hvg, verbose = FALSE)
+hvg <- A_hvg@assays$RNA@var.features
+
+# subset w
+w_hvg <- w[hvg, ]
+
+# log-normalize "w" for visualization purposes
+w_hvg <- as.matrix(LogNormalize(w_hvg, verbose = FALSE))
+
+# get reordering of features for visualization purposes
+hc <- hclust(dist(w_hvg), method = "ward.D2")
+w_hvg <- w_hvg[hc$order,]
+
+w_plot <- mheatmap(w_hvg, colors = brewer.pal(8, "Blues"), Rowv = FALSE, aspect.ratio = 1, legend.labels = c(5, 2.5, 0), guide.title = "feature\nweight", ylab = "2000 variable genes", xlab = "cluster centers")
+
+# get cosine similarity between the clusters
+sim <- cosine(w, w)
+diag(sim) <- NA
+sim[upper.tri(sim)] <- NA
+cos_plot <- mheatmap(sim, colors = viridis(20, option = "B"), Rowv = FALSE, aspect.ratio = 0.9, legend.labels = c(0.9, 0.5, 0), guide.title = "cosine\nsimilarity", na.color = "#ffffff", show.rownames = TRUE) + theme(axis.text.x = element_text(angle = 90))
+```
+
+## Project centers onto cells
+
+A clustering of dataset (`A`) can be described in terms of a feature factors matrix (`w`) and a sample factors matrix (`h`):
+ * `w` contains the cluster centers
+ * `h` contains unique sample mappings
+
+`tlearn` solves for `h` given a `w` of cluster centers and an `A` of samples. We will generate several projections of `h`.
+
+We will generate several projections: 
+ 1. A simple non-negative least squares projection for unbiased clustering based on the loss objective alone
+ 2. A multinomial projection to enforce a fuzzy soft clustering
+ 3. A binary projection to enforce a hard clustering
+ 4. A binary L0-truncated projection for hard clustering
+ 
+```{r}
+# NNLS projection
+h1 <- tlearn(A, w)
+
+# NNLS + L0-truncated projection
+h2 <- tlearn(A, w, L0 = 1)
+
+# multinomial projection
+h3 <- tlearn(A, w, values = c(0, 0.25, 0.5, 0.75, 1))
+
+# binary + L0-truncated projection
+h4 <- tlearn_binary(A, w, verbose = FALSE, L0 = 1)
+
+rownames(h1) <- rownames(h2) <- rownames(h3) <- rownames(h4) <- unique(tcells_ann$cluster)
+```
+
+
+```{r}
+library(viridis)
+library(RColorBrewer)
+
+h1_heatmap <- mheatmap(h1, xlab = expression("1231 CD64+ T-cells"), title = "non-negative least squares projection", colors = c("#fafafa", viridis(10)[1]), show.rownames = TRUE, aspect.ratio = 0.5)
+
+h2_heatmap <- mheatmap(h2, xlab = "1231 CD64+ T-cells", guide.title = "mapping\nweight", title = "nnls projection with L0 = 1", legend.key.width = 0.2, colors = c("#fafafa", brewer.pal(9, "Blues")), aspect.ratio = 0.5, show.rownames = TRUE)
+
+h3_heatmap <- mheatmap(round(h3, 2), xlab = "1231 CD64+ T-cells", guide.title = "mapping\nweight", title = "multinomial projection", rownames.text.size = 8, discrete = T, legend.key.width = 0.2, colors = c("#fafafa", brewer.pal(4, "Greens")), aspect.ratio = 0.5, show.rownames = TRUE)
+
+h4_heatmap <- mheatmap(round(h4, 2), xlab = "1231 CD64+ T-cells", guide.title = "mapping\nweight", title = "binary projection with L0 = 1", discrete = T, legend.key.width = 0.2, colors <- c("#fafafa", 2), aspect.ratio = 0.5, show.rownames = TRUE)
+```
+
+## MAE of each sample
+
+Calculate mean Mean Absolute Error per sample over the total absolute error for each projection.
+
+```{r}
+h1_mse <- errorSample(tcells, w, h = h1, relative = T, error_method = "mae")
+h2_mse <- errorSample(tcells, w, h = h2, relative = T, error_method = "mae")
+h3_mse <- errorSample(tcells, w, h = h3, relative = T, error_method = "mae")
+h4_mse <- errorSample(tcells, w, h = h4, relative = T, error_method = "mae")
+h1_mse <- data.frame(h1_mse)
+h2_mse <- data.frame(h2_mse)
+h3_mse <- data.frame(h3_mse)
+h4_mse <- data.frame(h4_mse)
+h1_mse$type <- "nnls"
+h2_mse$type <- "nnls + L0"
+h3_mse$type <- "multinomial"
+h4_mse$type <- "binary + L0"
+colnames(h1_mse) <- colnames(h2_mse) <- colnames(h3_mse) <- colnames(h4_mse) <- c("value", "type")
+mse_errors <- rbind(h1_mse, h2_mse, h3_mse, h4_mse)
+
+mse_errors$type <- factor(mse_errors$type, levels = c("nnls", "nnls + L0", "multinomial", "binary + L0"))
+
+mseplot <- ggplot(mse_errors, aes(x = type, y = value, fill = type)) + 
+  geom_violin(trim=TRUE) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1.25) + 
+  labs(y = "MAE per sample/\ntotal sample value", x = "projection method") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title = element_text(hjust = 0.5)) +
+  scale_fill_manual(values = c(viridis(10)[1], brewer.pal(9, "Blues")[8], brewer.pal(4, "Greens")[3], "#F8766D")) + NoLegend() +
+  scale_x_discrete(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  stat_summary(fun=median, geom="point", size=3, color = "white")
+
+```
+
+# Specificity of the projection
+
+```{r}
+h1spec <- data.frame(sort(apply(h1, 2, max), decreasing = TRUE))
+h2spec <- data.frame(sort(apply(h2, 2, max), decreasing = TRUE))
+h3spec <- data.frame(sort(apply(h3, 2, max), decreasing = TRUE))
+h4spec <- data.frame(sort(apply(h4, 2, max), decreasing = TRUE))
+h1spec$type <- "nnls"
+h2spec$type <- "nnls + L0"
+h3spec$type <- "multinomial"
+h4spec$type <- "binary + L0"
+h1spec$rank <- 1:nrow(h1spec)
+h2spec$rank <- 1:nrow(h1spec)
+h3spec$rank <- 1:nrow(h1spec)
+h4spec$rank <- 1:nrow(h1spec)
+colnames(h1spec) <- colnames(h2spec) <- colnames(h3spec) <- colnames(h4spec) <- c("value", "type", "rank")
+specificities <- rbind(h1spec, h2spec, h3spec, h4spec)
+
+specificities$type <- factor(specificities$type, levels = c("nnls", "nnls + L0", "multinomial", "binary + L0"))
+
+specificities_plot <- ggplot(specificities, aes(x = rank, y = value, color = type)) + 
+  geom_line(size = 1) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1.25) + 
+  labs(y = "Max mapping weight", x = "sample index") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c(viridis(10)[1], brewer.pal(9, "Blues")[8], brewer.pal(4, "Greens")[3], "#F8766D")) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 1.25))
+```
+
+# Finding the best binary value
+
+Find the best binary value for an L0=1 truncated projection and a not truncated projection. This is normally handled by tune_binary, but we will make it explicit here.
+
+```{r}
+values <- seq(from = 0.6, to = 1, by = 0.01)
+tloss <- ntloss <- list()
+for(i in 1:length(values)){
+  message("Value: ", values[i])
+  tloss[[i]] <- error(A, w, h = tlearn(A, w, L0 = 1, values = c(0, values[i])))
+  ntloss[[i]] <- error(A, w, h = tlearn(A, w, values = c(0, values[i])))
+}
+losses <- c(sapply(tloss, as.double), sapply(ntloss, as.double))
+names(losses) <- c(values, values)
+losses <- data.frame(losses)
+losses$type <- c(rep("L0 = NA", length(values)), rep("L0 = 1", length(values)))
+losses$value <- c(values, values)
+
+binary_plot <- ggplot(losses, aes(x = value, y = losses, color = type)) + 
+  geom_point(size = 1) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1.25) + 
+  labs(y = "MSE of projection", x = "binary value") +
+  scale_color_manual(values = c("#F8766D", "#FAA6A0")) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0), limits = c(0.825,0.925)) +
+  stat_smooth(method="lm", se=TRUE, fill=NA, formula=y ~ poly(x, 2, raw=TRUE))
+```
+
+Put figure 1 together:
+
+```{r}
+library(cowplot)
+row1 <- plot_grid(umap, w_plot, cos_plot, nrow = 1, ncol = 3, labels = c("A", "B", "C"))
+row2 <- plot_grid(h1_heatmap, h2_heatmap, h3_heatmap, h4_heatmap, ncol = 2, nrow = 2, labels = c("D", "E", "F", "G"))
+row3 <- plot_grid(mseplot, specificities_plot, binary_plot, nrow = 1, ncol = 3, labels = c("H", "I", "J"), rel_widths = c(0.65, 0.9, 0.9), align = "h")
+fig1 <- plot_grid(row1, row2, row3, nrow = 3, ncol = 1, rel_heights = c(1, 1.5, 1))
+```
+
+Save the file:
+
+```{r}
+# ggsave(filename = "fig1.png", fig1, height = 13, units = "in", width = 10)
+```
+
+## Applying this same approach with kmeans clustering.
+
+First let's see if there is any obvious rank for k-means:
+
+```{r, error = FALSE, warning = FALSE, message = FALSE}
+kmeans_results <- list()
+k_values <- 3:30
+for(i in 1:length(k_values)){
+  message("k = ", k_values[i])
+  kmeans_results[[i]] <- kmeans(t(tcells), k_values[i], iter.max = 50)
+}
+```
+
+Plot within-cluster sum of squares for all k-means results.
+
+```{r}
+wss <- data.frame(cbind(sapply(kmeans_results, function(x) x$tot.withinss), k_values))
+colnames(wss) <- c("wss", "k")
+elbow_plot <- ggplot(data = wss, aes(x = k, y = wss)) + 
+  geom_line() + 
+  geom_point() + 
+  labs(y = "total within-cluster sum of squares", x = "k-means rank") + 
+  theme_classic() + 
+  theme(aspect.ratio = 1) + 
+  geom_vline(xintercept=15, color = "gray", linetype = "dashed", size = 1) + 
+  scale_y_continuous(labels = function(x) format(x, scientific = TRUE), expand = c(0, 0)) + 
+  scale_x_continuous(expand = c(0, 0))
+```
+
+There is no obvious rank. Just go with 15 for consistency with the previous experiment.
+
+## Cell type enrichment in k-means model
+
+```{r}
+kmeans_model <- kmeans(t(tcells), 15)
+w <- t(kmeans_model$centers)
+cluster_cells <- kmeans_model$cluster
+colnames(centers) <- paste("kmeans",1:15)
+
+w_hvg <- w[hvg,]
+w_hvg <- as.matrix(LogNormalize(w_hvg, verbose = FALSE))
+hc <- hclust(dist(w_hvg), method = "ward.D2")
+w_hvg <- w_hvg[hc$order,]
+w_plot <- mheatmap(w_hvg, colors = brewer.pal(8, "Blues"), Rowv = TRUE, aspect.ratio = 1, legend.labels = c(5, 2.5, 0), guide.title = "feature\nweight", ylab = "2000 variable genes", xlab = "k-means cluster centers")
+```
+
+## Check cell type counts in each cluster 
+
+Use original T-cell paper annotation for comparison.
+
+```{r}
+cell_types <- list()
+for(i in 1:ncol(w)){
+  cells_in_cluster <- names(cluster_cells[cluster_cells == i])
+  cell_types[[i]] <- data.frame(table(tcells_ann$cluster[match(cells_in_cluster, rownames(tcells_ann))]))
+  cell_types[[i]]$kcluster <- i
+}
+
+cell_types <- data.frame(do.call(rbind, cell_types))
+colnames(cell_types) <- c("celltype", "count", "cluster")
+
+cell_type_plot <- ggplot(cell_types, aes(x = factor(cluster), y = count, fill = celltype)) + 
+    geom_bar(position = "fill", stat = "identity") +
+    scale_y_continuous(expand = c(0, 0)) + 
+  scale_fill_manual(values = palette) + 
+  theme_classic() + 
+  labs(y = "Fractional composition", x = "K-means cluster") + 
+  scale_x_discrete(expand = c(0, 0)) + 
+  theme(
+    plot.title = element_text(hjust = 0.5), 
+    aspect.ratio = 1,
+    legend.key.size = unit(0.3, "cm")
+  )
+```
+
+## Repeat figure 1 for the k-means "w"
+
+```{r}
+A <- tcells[, order(cluster_cells)]
+
+h1 <- tlearn(A, w)
+h2 <- tlearn(A, w, L0 = 1)
+h3 <- tlearn(A, w, values = c(0, 0.25, 0.5, 0.75, 1))
+h4 <- tlearn_binary(A, w, verbose = FALSE, L0 = 1)
+rownames(h1) <- rownames(h2) <- rownames(h3) <- rownames(h4) <- unique(tcells_ann$cluster)
+
+h1_heatmap <- mheatmap(h1, xlab = expression("1231 CD64+ T-cells"), title = "non-negative least squares projection", colors = c("#fafafa", viridis(10)[1]), show.rownames = TRUE, aspect.ratio = 0.5)
+h2_heatmap <- mheatmap(h2, xlab = "1231 CD64+ T-cells", guide.title = "mapping\nweight", title = "nnls projection with L0 = 1", legend.key.width = 0.2, colors = c("#fafafa", brewer.pal(9, "Blues")), aspect.ratio = 0.5, show.rownames = TRUE)
+h3_heatmap <- mheatmap(round(h3, 2), xlab = "1231 CD64+ T-cells", guide.title = "mapping\nweight", title = "multinomial projection", rownames.text.size = 8, discrete = T, legend.key.width = 0.2, colors = c("#fafafa", brewer.pal(4, "Greens")), aspect.ratio = 0.5, show.rownames = TRUE)
+h4_heatmap <- mheatmap(round(h4, 2), xlab = "1231 CD64+ T-cells", guide.title = "mapping\nweight", title = "binary projection with L0 = 1", discrete = T, legend.key.width = 0.2, colors <- c("#fafafa", 2), aspect.ratio = 0.5, show.rownames = TRUE)
+
+h1_mse <- errorSample(tcells, w, h = h1, relative = T, error_method = "mae")
+h2_mse <- errorSample(tcells, w, h = h2, relative = T, error_method = "mae")
+h3_mse <- errorSample(tcells, w, h = h3, relative = T, error_method = "mae")
+h4_mse <- errorSample(tcells, w, h = h4, relative = T, error_method = "mae")
+h1_mse <- data.frame(h1_mse)
+h2_mse <- data.frame(h2_mse)
+h3_mse <- data.frame(h3_mse)
+h4_mse <- data.frame(h4_mse)
+h1_mse$type <- "nnls"
+h2_mse$type <- "nnls + L0"
+h3_mse$type <- "multinomial"
+h4_mse$type <- "binary + L0"
+colnames(h1_mse) <- colnames(h2_mse) <- colnames(h3_mse) <- colnames(h4_mse) <- c("value", "type")
+mse_errors <- rbind(h1_mse, h2_mse, h3_mse, h4_mse)
+
+mse_errors$type <- factor(mse_errors$type, levels = c("nnls", "nnls + L0", "multinomial", "binary + L0"))
+
+mseplot <- ggplot(mse_errors, aes(x = type, y = value, fill = type)) + 
+  geom_violin(trim=TRUE) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1.25) + 
+  labs(y = "MAE per sample/\ntotal sample value", x = "projection method") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title = element_text(hjust = 0.5)) +
+  scale_fill_manual(values = c(viridis(10)[1], brewer.pal(9, "Blues")[8], brewer.pal(4, "Greens")[3], "#F8766D")) + NoLegend() +
+  scale_x_discrete(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0)) +
+  stat_summary(fun=median, geom="point", size=3, color = "white")
+
+h1spec <- data.frame(sort(apply(h1, 2, max), decreasing = TRUE))
+h2spec <- data.frame(sort(apply(h2, 2, max), decreasing = TRUE))
+h3spec <- data.frame(sort(apply(h3, 2, max), decreasing = TRUE))
+h4spec <- data.frame(sort(apply(h4, 2, max), decreasing = TRUE))
+h1spec$type <- "nnls"
+h2spec$type <- "nnls + L0"
+h3spec$type <- "multinomial"
+h4spec$type <- "binary + L0"
+h1spec$rank <- 1:nrow(h1spec)
+h2spec$rank <- 1:nrow(h1spec)
+h3spec$rank <- 1:nrow(h1spec)
+h4spec$rank <- 1:nrow(h1spec)
+colnames(h1spec) <- colnames(h2spec) <- colnames(h3spec) <- colnames(h4spec) <- c("value", "type", "rank")
+specificities <- rbind(h1spec, h2spec, h3spec, h4spec)
+
+specificities$type <- factor(specificities$type, levels = c("nnls", "nnls + L0", "multinomial", "binary + L0"))
+
+specificities_plot <- ggplot(specificities, aes(x = rank, y = value, color = type)) + 
+  geom_line(size = 1) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1.25) + 
+  labs(y = "Max mapping weight", x = "sample index") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1), plot.title = element_text(hjust = 0.5)) +
+  scale_color_manual(values = c(viridis(10)[1], brewer.pal(9, "Blues")[8], brewer.pal(4, "Greens")[3], "#F8766D")) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0), limits = c(0, 1.25))
+
+values <- seq(from = 0.6, to = 1, by = 0.01)
+tloss <- ntloss <- list()
+for(i in 1:length(values)){
+  message("Value: ", values[i])
+  tloss[[i]] <- error(A, w, h = tlearn(A, w, L0 = 1, values = c(0, values[i])))
+  ntloss[[i]] <- error(A, w, h = tlearn(A, w, values = c(0, values[i])))
+}
+losses <- c(sapply(tloss, as.double), sapply(ntloss, as.double))
+names(losses) <- c(values, values)
+losses <- data.frame(losses)
+losses$type <- c(rep("L0 = NA", length(values)), rep("L0 = 1", length(values)))
+losses$value <- c(values, values)
+
+binary_plot <- ggplot(losses, aes(x = value, y = losses, color = type)) + 
+  geom_point(size = 1) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1.25) + 
+  labs(y = "MSE of projection", x = "binary value") +
+  scale_color_manual(values = c("#F8766D", "#FAA6A0")) +
+  scale_x_continuous(expand = c(0, 0)) + scale_y_continuous(expand = c(0, 0), limits = c(0.8,0.95)) +
+  stat_smooth(method="lm", se=TRUE, fill=NA, formula=y ~ poly(x, 2, raw=TRUE))
+```
+
+Put figure 1 together:
+
+```{r}
+library(cowplot)
+row1 <- plot_grid(elbow_plot, w_plot, cell_type_plot, nrow = 1, ncol = 3, labels = c("A", "B", "C"), rel_widths = c(0.8, 1, 1.1))
+row2 <- plot_grid(h1_heatmap, h2_heatmap, h3_heatmap, h4_heatmap, ncol = 2, nrow = 2, labels = c("D", "E", "F", "G"))
+row3 <- plot_grid(mseplot, specificities_plot, binary_plot, nrow = 1, ncol = 3, labels = c("H", "I", "J"), rel_widths = c(0.65, 0.9, 0.9), align = "h")
+figs1 <- plot_grid(row1, row2, row3, nrow = 3, ncol = 1, rel_heights = c(1, 1.5, 1))
+```
+
+Save the file:
+
+```{r}
+# ggsave(filename = "figs1.png", figs1, height = 13, units = "in", width = 10)
+```
+
+## Save the T-cells centers for later use
+
+```{r}
+cluster_cells <- lapply(split(tcells_ann, tcells_ann$cluster), rownames)
+tcells <- do.call(cbind, lapply(cluster_cells, function(x) rowMeans(tcells[,x])))
+save(tcells, file = "data/tcells.rda")
+```
+
+See the vignette for figure 2 for projections onto other datasets.

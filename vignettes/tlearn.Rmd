@@ -1,0 +1,136 @@
+---
+title: "Fast transfer learning with tlearn"
+author: "Zach DeBruine"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Fast transfer learning with tlearn}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+The `tlearn` R package is a fast and flexible toolkit for transfer learning. 
+
+## Objective of transfer learning 
+
+In transfer learning, we take an existing feature model learned from a training dataset and project it onto a new set of samples. The objective is to use well-understood factors to annotate new samples.
+
+## Projecting with tlearn
+
+This vignette shows how `tlearn` can project clustering projections in which clustering is treated as a dimensional reduction.
+
+**Our reference model (w)** is a set of 15 embryonic T-cell types, described by the expression of 17000 genes using high-quality droplet scRNA-seq [https://www.nature.com/articles/s41586-020-2316-7](Bian et al. Nature 2020), and made available here in the `tlearn` package.
+
+**Our projection samples (A)** are 2,700 PBMCs explored in this  [https://satijalab.org/seurat/articles/pbmc3k_tutorial.html](tutorial), also supplied in the `tlearn` package for convenience.
+
+
+
+Transfer learning:
+- **`tlearn`**: project samples onto factor models
+- **`tlearnMinibatch`**: split the task in `tlearn` into chunks
+
+Quality checking utilities:
+**`loss`**: error of a projection model or factorization
+**`sampleLoss`**: error of a projection model for each sample.
+**`rank`**: rank features in a projection by total weight and scale the projection model by the rank (diagonal) values
+**`align`**: align factors in two models to enable direct comparison
+**`purity`**: cosine distance between samples and factors as a measure of factor expression purity in each sample
+
+Least squares solving:
+- `gnnls`: generalized constrained non-negative least squares by sequential coordinate descent, the engine behind `tlearn`
+
+## vignette contents
+
+Worked examples for projecting factor models from **SVD**, **NMF**, and **UMAP** using single cell data from the `seuratData` package.
+
+Then, we use handy utilities in `tlearn` like `rank`, `match`, and `loss` to learn more about our projections.
+
+## Examples
+
+The `tlearn` dataset features two 
+
+Before we can use transfer learning, we need to generate a meaningful feature model.
+
+In this case, we'll learn a feature model describing cell types from the `seuratData::pbmc3k` dataset.
+
+## Vignette overview:
+
+We will start by learning some information about T-cells from the excellent dataset of human T-cells during early development (Zhilei Bian...Bing Liu et al. Nature 2020). We will:
+ 1. Average the expression of annotated clusters to find transcriptional metastates describing T-cell identities.
+ 2. Learn a deep feature model of biological processes in T-cells using NMF, cosine similarity, and SVD.
+
+We will then transfer the information we learned in the above models to three new datasets:
+ 1. PBMC: Seurat PBMC CITE-seq dataset of 162,000 PBMCs with a panel of 228 antibodies from the Satija Lab
+ 2. BMCITE: Bone marrow CITE-seq dataset of 30,672 cells from bone marrow with a panel of 25 antibodies from eight donors
+ 3. HCABM: A subsample of 40,000 cells from the Human Immune Cell Atlas bone marrow dataset
+ 4. MOCA: 5000 mononuclear cells from the Mouse Organogenesis Cell Atlas E9.5, E10.5, E11.5, E12.5, and E13.5 embryos
+
+We will ask the following questions:
+ 1. Find T-cell types in the PBMC dataset of 162,000 PBMCs (the needles in the haystack)
+ 2. 
+ 3. 
+ 4. Cross-species learning: Compare human Carnegie Stage to mouse embryonic day in the MOCA
+
+## Figure 1. Constrained projection gives hard or soft clusterings
+A) Feature model: heatmap of 15 cell types (top 1000 highly variable genes shown)
+B) Projection of feature model onto T-cell dataset:  L0_sample/values = 1/(0,1), C) = 2/(0, 0.5, 1), D) = 4/(0, 0.25, 0.5, 0.75)
+E) yolk-sac differentiation trajectory with clusters
+F) filled area plot of differentiation trajectory showing cell type frequency at psuedotimes for hard clustering
+G) as in F for soft clustering
+H) as in F for soft fuzzy clustering
+I) UMap of all T-cells with hard clusterings from hard projection.
+J) hard clustering for yolk sac macrophages (red)
+K) as in I for fuzzy soft clustering
+L) as in I for very fuzzy clustering
+
+## Figure 2. Regularized projection facilitates transfer of specialized information to diverse sample sets
+A) NMF factor model of t_cell data against missing value imputation to learn biological processes. W is 1000 variable features, H is embeddings with subbar legend for cell type.
+B) Jaccard overlap between known cell type and factor weights (generalizable to any)
+C) Factor models specifically describing yolk sac development (weight of factor model against pseudotime weight)
+D) Project selected factors back onto the dataset without regularization. Then add regularization.
+Stay within the dataset
+
+## Figure 3. Application of bidirectional transfer learning for multimodal insights.
+A) Project cluster center model from #1 onto BMCITE and B) PBMC dataset with regularization and constraints for soft clustering. 
+C) Cosine distance of cells to matched cluster centers, enforce a cutoff, D) for PBMC
+E) CITE-seq cluster centers. Jitter manhattan plot of top proteins expressed in each cluster.
+F) Agreement between CITE-seq from BMCITE and PBMC.
+G) Project CITE-seq back to T-cell reference, impute protein counts in yolk sac macrophage development. Compare changes in protein vs. changes in RNA over pseudotime trajectory (line plot). See how much loss occurred in the projection process by comparing the embeddings of the new factor model to the embeddings of the previous model (i.e. cosine similarity of factors).
+H) RNA vs. protein abundance across yolk sack macrophage development
+
+## Figure 4. Application of transfer learning for cross-species insights.
+A) Project 3-5 selected NMF factors from figure 2 onto all of the MOCA. Zoomed out UMAP showing all cells, and projection of the factor.
+B) Zoomed-in UMAP of only cells with significant expression of the factor. Save these cells as a dataset, and capture annotation data.
+C) Describe interesting annotations of these cells
+D) Microwell-seq is very noisy compared to the T-cell reference. 
+
+
+We use the CITE-seq dataset from (Stuart*, Butler* et al, Cell 2019), which consists of 30,672 scRNA-seq profiles measured alongside a panel of 25 antibodies from bone marrow. The object contains two assays, RNA and antibody-derived tags (ADT).
+
+This vignette will use a well-annotated T-cell development reference to information learned from a well-annotated T-cell development reference dataset to find specific types of T-cells 
+We will be working with three datasets in this vignette:
+
+
+
+
+## Transfer learning is degenerative
+
+There are three ways transfer learning loses information:
+1. Factors in the model do not apply to the new samples. For instance, projecting factors from bird distribution models in Thailand will not inform new samples in Germany.
+2. The converse of #1: Samples encode additional factorizable signal not captured in the original model. For instance, a model learned from single cell sequencing of a normal tissue will project to a dataset of a cancer tumor, but we will not learn anything about the cancer tumor specifically.
+3. Something is projected because something is better than nothing. Noise, systematic biases, and weakly associated signals may all be projected simply to minimize the loss function.
+
+## Addressing degeneration in transfer learning
+
+Each of these limitations can be addressed using a combination of techniques:
+
+1. `tlearn::purity` verifies association of samples with factors using cosine similarity.
+2. `tlearn::sampleLoss` checks how well samples correspond to the factor model. Large differences between sample groups indicate poor transfer of information across the entire dataset.
+3. `tlearn::match` aligns multiple models so that, for instance, a transfer-learned model and the actual model can be compared between two datasets.

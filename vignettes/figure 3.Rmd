@@ -1,0 +1,104 @@
+---
+title: "Figure 3"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+
+In this vignette, we'll take the tcells cluster centers and project them onto two CITE-seq datasets: a dataset of 30,000 human bone marrow cells available through `SeuratData::bmcite`, and then we'll use a larger dataset of 162,000 PBMCs with a panel of 228 antibodies.
+
+Finally, we'll also use a dataset of 40,000 cells from the Human Immune Cell atlas also available through `SeuratData::hcabm40k`.
+
+Both of these datasets are described and explored in the Seurat vignette on multimodal analysis, which you can find [https://satijalab.org/seurat/articles/multimodal_reference_mapping.html](here).
+
+## Bmcite analysis
+
+1. Project bmcite using a binary L0-truncated projection.
+
+```{r}
+# install SeuratData
+# library(devtools)
+# devtools::install_github('satijalab/seurat-data')
+library(seuratData)
+library(Seurat)
+
+# download bmcite data
+InstallData("bmcite")
+bmcite <- LoadData("bmcite")
+
+bmcite <- RunUMAP(bmcite, dims = 1:20, reduction = "spca")
+bm_ann <- bmcite@reductions$umap@cell.embeddings
+bm_ann <- data.frame(cbind(bm_ann, bmcite$celltype.l1, bmcite$celltype.l2))
+colnames(bm_ann) <- c("umap1", "umap2", "celltype1", "celltype2")
+
+A_adt <- bmcite@assays$ADT@data
+A_rna <- bmcite@assays$RNA@data
+
+# get tcell annotated centers
+data(tcells)
+
+# get intersection between tcells and w
+genes_in_common <- intersect(rownames(A_rna), rownames(tcells))
+A_rna <- A_rna[genes_in_common,]
+w <- tcells[genes_in_common,]
+
+# tlearn projection
+h <- tlearn(A_rna, w, L0 = 1)
+hplot <- mheatmap(h[,sample(1:ncol(h), 5000)], Colv = TRUE, Rowv = TRUE)
+hplot <- mheatmap(h_cos[,sample(1:ncol(h), 1000)], Colv = TRUE, Rowv = TRUE, show.rownames = TRUE, show.colnames = FALSE)
+
+# have a look at the values that are being projected
+maxvals <- apply(h, 2, max)
+
+# find the best binary value
+
+
+h_cos <- cosine(A_rna, w)
+
+```
+
+## Download data
+
+Load the t-cells data, available through `tlearn`:
+
+```{r}
+# install SeuratData
+# library(devtools)
+# devtools::install_github('satijalab/seurat-data')
+library(seuratData)
+
+# install SeuratDisk
+# devtools::install_github("mojaveazure/seurat-disk")
+library(SeuratDisk)
+library(Seurat)
+
+# download bmcite data
+InstallData("bmcite")
+bmcite <- LoadData("bmcite")
+
+# download hcabm40k data
+InstallData("hcabm40k")
+hcabm40k <- LoadData("hcabm40k")
+
+# download files
+# https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat
+# move to working directory as "pbmc_multimodal.h5seurat"
+
+  assay SCT -> reductions -> umap
+  SCT -> data
+
+  ADT -> data
+
+pbmc_sct <- LoadH5Seurat("data/pbmc_multimodal.h5Seurat", assays = list(SCT = c("data")))
+
+pbmc_sct <- LoadH5Seurat("data/pbmc_multimodal.h5Seurat", assays = list(SCT = c("data")))
+
+```
+
+```{r}
+data(tcells)
+```
