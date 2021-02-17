@@ -1,0 +1,19 @@
+Package: tlearn
+Type: Package
+Title: Transfer learn
+Version: 1.0
+Date: 2021-02-11
+Author: Zach DeBruine [aut, cre]
+Maintainer: Zach DeBruine <zach.debruine@vai.org>
+Description: Fast and flexible sample projection onto feature models for transfer learning with constraints, regularization, and weights.
+License: GPL (>=2)
+Imports: Rcpp (>= 1.0.3), Matrix, knitr, methods, utils, ggplot2, data.table, reshape2
+Encoding: UTF-8
+LazyData: true
+LinkingTo: Rcpp, RcppArmadillo
+VignetteBuilder: knitr
+Depends: R (>= 3.5.0)
+BugReports: https://github.com/zdebruine/tlearn/issues
+URL: https://github.com/zdebruine/tlearn
+References: NNLM R package: https://github.com/linxihui/NNLM
+RoxygenNote: 7.1.1
